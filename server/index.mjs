@@ -44,8 +44,11 @@ const server = http.createServer(async (req, res) => {
     const upstreamUrl = `${TARGET}${resolved.url}`
 
     const headers = { ...req.headers }
-    delete headers.host
-    delete headers['content-length']
+    // Drop hop-by-hop / client-only headers undici rejects or that must be
+    // recomputed for the forwarded request (curl sends Expect for large bodies).
+    for (const name of ['host', 'content-length', 'expect', 'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer']) {
+      delete headers[name]
+    }
 
     const init = { method: resolved.method, headers }
     if (resolved.dropBody) {
@@ -76,7 +79,8 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(upstream.status, outHeaders)
     res.end(buffer)
   } catch (error) {
-    sendJSON(res, 502, { error: error?.message || String(error) })
+    const cause = error?.cause ? error.cause.message || String(error.cause) : ''
+    sendJSON(res, 502, { error: error?.message || String(error), cause: cause || undefined })
   }
 })
 
