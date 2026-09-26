@@ -6,7 +6,8 @@
  *   COMPAT_TARGET  upstream base URL      (default http://127.0.0.1:8080)
  *
  * External clients that still speak the old paths point at this port; the
- * browser plugin covers the WebUI itself.
+ * browser plugin covers the WebUI itself. Legacy request aliases live in
+ * ../shared/rules.js and include method/path/query/body rewrites.
  */
 import http from 'node:http'
 import { resolveRequest, adaptResponse, hasResponseAdapter, describeRules } from '../shared/rules.js'
@@ -37,23 +38,31 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { ok: true, target: TARGET, port: PORT })
     }
 
-    const resolved = resolveRequest(req.url, req.method)
+    const hasBodyMethod = req.method && !['GET', 'HEAD'].includes(req.method.toUpperCase())
+    const rawBody = hasBodyMethod ? (await readBody(req)).toString('utf8') : undefined
+    const resolved = resolveRequest(req.url, req.method, rawBody, { via: 'proxy' })
     const upstreamUrl = `${TARGET}${resolved.url}`
+
     const headers = { ...req.headers }
     delete headers.host
     delete headers['content-length']
 
-    const init = { method: req.method, headers }
-    if (req.method && !['GET', 'HEAD'].includes(req.method.toUpperCase())) {
-      init.body = await readBody(req)
+    const init = { method: resolved.method, headers }
+    if (resolved.dropBody) {
+      if (['GET', 'HEAD'].includes(resolved.method.toUpperCase())) delete headers['content-type']
+    } else if (resolved.bodyChanged) {
+      init.body = JSON.stringify(resolved.body ?? {})
+      headers['content-type'] = 'application/json'
+    } else if (rawBody !== undefined) {
+      init.body = rawBody
     }
 
     const upstream = await fetch(upstreamUrl, init)
     let buffer = Buffer.from(await upstream.arrayBuffer())
     const contentType = upstream.headers.get('content-type') || ''
-    if (contentType.includes('application/json') && hasResponseAdapter(resolved.path, req.method)) {
+    if (contentType.includes('application/json') && hasResponseAdapter(resolved.path, resolved.method)) {
       try {
-        const adapted = adaptResponse(resolved.path, req.method, JSON.parse(buffer.toString('utf8')))
+        const adapted = adaptResponse(resolved.path, resolved.method, JSON.parse(buffer.toString('utf8')))
         buffer = Buffer.from(JSON.stringify(adapted), 'utf8')
       } catch { /* leave the original body */ }
     }

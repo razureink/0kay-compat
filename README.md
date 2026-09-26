@@ -22,10 +22,30 @@ Generic policies (always active, every component):
 
 Per-component and additive response aliases live in `shared/rules.js`:
 
-- `PATH_ALIASES[component][oldPath] = currentPath` — **never** alias a path the
-  current WebUI still calls; only remap once Core stops serving it.
+- `REQUEST_ALIASES` — exact `METHOD path` rewrites that can also move a
+  query/body field into the path, change the method, or drop the body.
+- `PATH_ALIASES[component][oldPath] = currentPath` — simple path-only remaps;
+  **never** alias a path the current WebUI still calls.
 - `RESPONSE_ALIASES` — add legacy keys to JSON responses without removing the
   current ones (e.g. re-derive `packages` on `/api/plugins/installed`).
+
+### Legacy request mappings
+
+| Legacy | Current |
+|---|---|
+| `POST /api/plugins/enable\|disable {plugin}` | `PATCH /api/plugins/{plugin} {enabled}` |
+| `DELETE /api/providers/delete?id=` | `DELETE /api/providers/{id}` |
+| `DELETE /api/skills?name=` | `DELETE /api/skills/{name...}` |
+| `DELETE /api/live2d?id=` | `DELETE /api/live2d/{path...}` |
+| `POST /api/usage/clear` | `DELETE /api/usage` |
+| `POST /api/tasks/cancel {task_id}` | `POST /api/tasks/{task_id}/cancel` |
+| `PATCH\|DELETE /api/agent/sessions {session_id}` | `PATCH\|DELETE /api/agent/sessions/{session_id}` |
+| `POST /api/mocr/generate` | `POST /api/chat` |
+| `GET /api/life/state` | `GET /api/state` |
+| `GET /api/providers` (plaintext key)* | `GET /api/providers/credentials` |
+
+`*` The last rule is `scope: "proxy"` — it applies only to the external proxy so
+the live WebUI keeps the redacted `/api/providers` shape.
 
 Components covered: `core`, `webui`, `agent`, `life`, `mocr`, `searxng`.
 
@@ -50,7 +70,7 @@ After the WebUI loads, `window.__0KAY_COMPAT__` exposes `{ installed, hits, rule
 
 ## Adding a legacy mapping
 
-1. Edit `shared/rules.js` (`PATH_ALIASES` or `RESPONSE_ALIASES`).
+1. Edit `shared/rules.js` (`REQUEST_ALIASES`, `PATH_ALIASES` or `RESPONSE_ALIASES`).
 2. Rebuild: `npm --prefix plugin-web/compat run build` (or reinstall via 0kay-pm).
 3. Reload the WebUI; the proxy picks it up on restart.
 

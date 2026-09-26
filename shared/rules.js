@@ -6,16 +6,21 @@
  * so older front-end bundles and external clients keep working after the HTTP
  * API evolves.
  *
- * Two kinds of rules:
+ * Rule kinds:
  *  1. Generic path policies (always on, component-agnostic):
  *       /api/v1/foo            -> /api/foo
  *       /plugin/<name>/ui/x    -> /api/plugins/<name>/ui/x
  *       //a//b/                -> /a/b
- *  2. Per-component legacy aliases (PATH_ALIASES) and additive response
- *     aliases (RESPONSE_ALIASES).
+ *  2. Legacy request aliases (REQUEST_ALIASES): exact method+path rewrites that
+ *     may also move a query/body field into the path, change the method, or drop
+ *     the body. Mirrors the retired-to-current mapping table in docs/HTTP_API.md.
+ *  3. Additive response aliases (RESPONSE_ALIASES): guarantee legacy keys exist
+ *     without removing the current ones.
  *
  * IMPORTANT: aliases must never change behaviour the current WebUI relies on.
- * Prefer additive response fields; only alias a path once Core stops serving it.
+ * Prefer additive response fields; only alias a path once the caller migrates.
+ * Rules marked `scope: "proxy"` run only on the external proxy so the live
+ * WebUI keeps the redacted `/api/providers` shape.
  */
 
 /** API surfaces this layer covers. */
@@ -25,14 +30,8 @@ export const COMPONENTS = ['core', 'webui', 'agent', 'life', 'mocr', 'searxng']
 export const CURRENT_API_VERSION = 1
 
 /**
- * Exact legacy path -> current path, per component. Empty for now: Core still
- * serves the legacy paths it shipped with, so nothing needs remapping yet.
- * Add entries as old versions are retired, e.g.:
- *
- *   life:  { '/api/permissions': '/api/life/permissions' },
- *   agent: { '/api/agent/session': '/api/agent/sessions' },
- *
- * Never map a path the current WebUI still calls (e.g. /api/life/state).
+ * Exact legacy path -> current path, per component. Kept for simple, path-only
+ * remaps. Empty by default: richer remaps live in REQUEST_ALIASES.
  */
 export const PATH_ALIASES = {
   core: {},
@@ -42,6 +41,164 @@ export const PATH_ALIASES = {
   mocr: {},
   searxng: {},
 }
+
+/** Encode each path segment but keep the separators (for `{name...}` tails). */
+function segPaths(value) {
+  return String(value ?? '')
+    .split('/')
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join('/')
+}
+
+/** Remove a query string entirely. */
+const NO_SEARCH = ''
+
+/**
+ * Legacy request aliases. Each rule matches one exact `METHOD path` (after
+ * normalizePath) and `rewrite(ctx)` returns an optional patch:
+ *   { method?, path?, search?, body?, dropBody? }
+ * Returning null/undefined leaves the request untouched (the caller's own
+ * validation then produces the error).
+ *
+ * ctx: { path, method, searchParams, query, body }  // body = parsed JSON or undefined
+ */
+export const REQUEST_ALIASES = [
+  {
+    id: 'plugins-enable',
+    component: 'core',
+    method: 'POST',
+    path: '/api/plugins/enable',
+    to: 'PATCH /api/plugins/{plugin}',
+    rewrite: (ctx) => ({
+      method: 'PATCH',
+      path: `/api/plugins/${encodeURIComponent(ctx.body?.plugin || ctx.body?.name || '')}`,
+      dropBody: false,
+      body: { enabled: true },
+    }),
+  },
+  {
+    id: 'plugins-disable',
+    component: 'core',
+    method: 'POST',
+    path: '/api/plugins/disable',
+    to: 'PATCH /api/plugins/{plugin}',
+    rewrite: (ctx) => ({
+      method: 'PATCH',
+      path: `/api/plugins/${encodeURIComponent(ctx.body?.plugin || ctx.body?.name || '')}`,
+      body: { enabled: false },
+    }),
+  },
+  {
+    id: 'providers-delete-legacy',
+    component: 'core',
+    method: 'DELETE',
+    path: '/api/providers/delete',
+    to: 'DELETE /api/providers/{id}',
+    rewrite: (ctx) => {
+      const id = ctx.query.id || ctx.body?.id
+      if (!id) return null
+      return { path: `/api/providers/${encodeURIComponent(id)}`, search: NO_SEARCH }
+    },
+  },
+  {
+    id: 'skills-delete-legacy',
+    component: 'core',
+    method: 'DELETE',
+    path: '/api/skills',
+    to: 'DELETE /api/skills/{name...}',
+    rewrite: (ctx) => {
+      const name = ctx.query.name || ctx.body?.name
+      if (!name) return null
+      return { path: `/api/skills/${segPaths(name)}`, search: NO_SEARCH }
+    },
+  },
+  {
+    id: 'live2d-delete-legacy',
+    component: 'core',
+    method: 'DELETE',
+    path: '/api/live2d',
+    to: 'DELETE /api/live2d/{path...}',
+    rewrite: (ctx) => {
+      const id = ctx.query.id || ctx.body?.id
+      if (!id) return null
+      return { path: `/api/live2d/${segPaths(id)}`, search: NO_SEARCH }
+    },
+  },
+  {
+    id: 'usage-clear-legacy',
+    component: 'core',
+    method: 'POST',
+    path: '/api/usage/clear',
+    to: 'DELETE /api/usage',
+    rewrite: () => ({ method: 'DELETE', path: '/api/usage', dropBody: true }),
+  },
+  {
+    id: 'tasks-cancel-legacy',
+    component: 'core',
+    method: 'POST',
+    path: '/api/tasks/cancel',
+    to: 'POST /api/tasks/{task_id}/cancel',
+    rewrite: (ctx) => {
+      const id = ctx.body?.task_id || ctx.body?.taskId || ctx.query.task_id
+      if (!id) return null
+      return { path: `/api/tasks/${encodeURIComponent(id)}/cancel`, dropBody: true }
+    },
+  },
+  {
+    id: 'sessions-item-legacy',
+    component: 'core',
+    method: 'PATCH',
+    path: '/api/agent/sessions',
+    to: 'PATCH /api/agent/sessions/{session_id}',
+    rewrite: (ctx) => {
+      const id = ctx.body?.session_id || ctx.body?.sessionId || ctx.query.session_id
+      if (!id) return null
+      const rest = { ...(ctx.body || {}) }
+      delete rest.session_id
+      delete rest.sessionId
+      return { path: `/api/agent/sessions/${encodeURIComponent(id)}`, body: Object.keys(rest).length ? rest : undefined }
+    },
+  },
+  {
+    id: 'sessions-item-legacy-delete',
+    component: 'core',
+    method: 'DELETE',
+    path: '/api/agent/sessions',
+    to: 'DELETE /api/agent/sessions/{session_id}',
+    rewrite: (ctx) => {
+      const id = ctx.body?.session_id || ctx.body?.sessionId || ctx.query.session_id
+      if (!id) return null
+      return { path: `/api/agent/sessions/${encodeURIComponent(id)}`, dropBody: true }
+    },
+  },
+  {
+    id: 'mocr-generate-legacy',
+    component: 'mocr',
+    method: 'POST',
+    path: '/api/mocr/generate',
+    to: 'POST /api/chat',
+    rewrite: () => ({ path: '/api/chat' }),
+  },
+  {
+    id: 'life-state-legacy',
+    component: 'life',
+    method: 'GET',
+    path: '/api/life/state',
+    to: 'GET /api/state',
+    rewrite: () => ({ path: '/api/state' }),
+  },
+  {
+    id: 'providers-credentials-legacy',
+    component: 'core',
+    method: 'GET',
+    path: '/api/providers',
+    to: 'GET /api/providers/credentials',
+    // Proxy-only: the live WebUI still reads the redacted `/api/providers`.
+    scope: 'proxy',
+    rewrite: () => ({ path: '/api/providers/credentials', search: NO_SEARCH }),
+  },
+]
 
 /**
  * Additive response adapters: guarantee legacy keys exist without removing the
@@ -81,8 +238,34 @@ export function componentFor(path) {
   return 'webui'
 }
 
-/** Resolve a request URL (relative or absolute) to the current API contract. */
-export function resolveRequest(rawUrl, method = 'GET') {
+/** Parse a request body into a plain object when possible (JSON or form). */
+export function parseBody(body) {
+  if (body == null) return undefined
+  if (typeof body === 'object') return body
+  if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
+    return Object.fromEntries(body.entries())
+  }
+  if (typeof body === 'string' && body.trim()) {
+    try {
+      return JSON.parse(body)
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
+}
+
+/**
+ * Resolve a request (URL + method + optional body) to the current API contract.
+ *
+ * opts.via: 'browser' (default) or 'proxy'. `scope: "proxy"` rules only apply
+ * to the proxy.
+ *
+ * Returns { component, originalPath, path, method, changed, url, body,
+ *           bodyChanged, dropBody }. `body` is an object when bodyChanged.
+ */
+export function resolveRequest(rawUrl, method = 'GET', body, opts = {}) {
+  const via = opts.via || 'browser'
   const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(String(rawUrl))
   const base = isAbsolute ? undefined : 'http://localhost'
   const url = new URL(String(rawUrl), base)
@@ -91,14 +274,57 @@ export function resolveRequest(rawUrl, method = 'GET') {
   const component = componentFor(path)
   const aliases = PATH_ALIASES[component] || {}
   if (aliases[path]) path = aliases[path]
-  const changed = path !== originalPath
-  const suffix = `${path}${url.search}`
+
+  let outMethod = String(method || 'GET').toUpperCase()
+  let search = url.search
+  let outBody = body
+  let bodyChanged = false
+  let dropBody = false
+  let changed = path !== originalPath
+
+  const parsedBody = parseBody(body)
+  const query = Object.fromEntries(url.searchParams.entries())
+
+  for (const rule of REQUEST_ALIASES) {
+    if (rule.scope === 'proxy' && via !== 'proxy') continue
+    if (rule.method !== outMethod) continue
+    if (rule.path !== path) continue
+    const result = rule.rewrite({ path, method: outMethod, searchParams: url.searchParams, query, body: parsedBody })
+    if (!result) continue
+    if (result.method && result.method !== outMethod) {
+      changed = true
+      outMethod = result.method
+    }
+    if (result.path && result.path !== path) {
+      changed = true
+      path = result.path
+    }
+    if (result.search !== undefined && result.search !== search) {
+      changed = true
+      search = result.search
+    }
+    if (result.dropBody) {
+      changed = true
+      dropBody = true
+      bodyChanged = true
+      outBody = undefined
+    } else if ('body' in result) {
+      changed = true
+      outBody = result.body
+      bodyChanged = true
+    }
+  }
+
+  const suffix = `${path}${search}`
   return {
     component,
     originalPath,
     path,
-    method: String(method || 'GET').toUpperCase(),
+    method: outMethod,
     changed,
+    body: outBody,
+    bodyChanged,
+    dropBody,
     url: isAbsolute ? `${url.origin}${suffix}` : suffix,
   }
 }
@@ -124,6 +350,13 @@ export function describeRules() {
     apiVersion: CURRENT_API_VERSION,
     components: COMPONENTS,
     pathAliases: PATH_ALIASES,
+    requestAliases: REQUEST_ALIASES.map(({ id, component, method, path, to, scope }) => ({
+      id,
+      component,
+      from: `${method} ${path}`,
+      to,
+      scope: scope || 'all',
+    })),
     responseAliases: RESPONSE_ALIASES.map(({ id, component, method, path }) => ({ id, component, method, path })),
   }
 }
