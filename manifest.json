@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "@razureink/0kay-compat",
+  "version": "0.1.0",
+  "description": "0KAY API compatibility layer: legacy-to-current translation for the WebUI (global bootstrap) and external clients (HTTP proxy).",
+  "requires": ["core"],
+  "install": [["npm", "--prefix", "plugin-web/compat", "ci"]],
+  "patches": ["core/data/ui/compat.patch"],
+  "ui": {
+    "dir": "plugin-web/compat",
+    "plugin": "compat",
+    "dist": "dist",
+    "build": [["npm", "run", "build"]]
+  },
+  "start": ["node", "server/index.mjs"],
+  "ports": { "http": 8090 }
+}
