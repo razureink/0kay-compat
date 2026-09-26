@@ -3,6 +3,7 @@
   "name": "@razureink/0kay-compat",
   "version": "0.1.0",
   "description": "0KAY API compatibility layer: legacy-to-current translation for the WebUI (global bootstrap) and external clients (HTTP proxy).",
+  "repository": "https://github.com/razureink/0kay-compat.git",
   "requires": ["core"],
   "install": [["npm", "--prefix", "plugin-web/compat", "ci"]],
   "patches": ["core/data/ui/compat.patch"],
