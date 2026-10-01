@@ -45,7 +45,10 @@ Per-component and additive response aliases live in `shared/rules.js`:
 | `GET /api/providers` (plaintext key)* | `GET /api/providers/credentials` |
 
 `*` The last rule is `scope: "proxy"` — it applies only to the external proxy so
-the live WebUI keeps the redacted `/api/providers` shape.
+the live WebUI keeps the redacted `/api/providers` shape. Current Core restricts
+`GET /api/providers/credentials` to **machine callers** (a plugin identity or a
+paired-device / `CORE_API_TOKEN` bearer), so the proxy forwards a Core token for
+this alias when the legacy client does not supply one — see `COMPAT_CORE_TOKEN`.
 
 Components covered: `core`, `webui`, `agent`, `life`, `mocr`, `searxng`.
 
@@ -61,8 +64,19 @@ Components covered: `core`, `webui`, `agent`, `life`, `mocr`, `searxng`.
 COMPAT_PORT=8090 COMPAT_TARGET=http://127.0.0.1:8080 node server/index.mjs
 ```
 
+| Variable | Default | Purpose |
+|---|---|---|
+| `COMPAT_PORT` | `8090` | Listen port of the external proxy |
+| `COMPAT_TARGET` | `http://127.0.0.1:8080` | Core (or component) base URL to forward to |
+| `COMPAT_CORE_TOKEN` | `CORE_PAIR_TOKEN` / `CORE_API_TOKEN` | Machine token attached to the `GET /api/providers` → `/api/providers/credentials` alias so legacy plaintext exports keep working |
+
 - `GET /compat/health` — liveness + upstream
 - `GET /compat/rules` — the active rule set (JSON)
+
+If no `COMPAT_CORE_TOKEN` (or `CORE_PAIR_TOKEN` / `CORE_API_TOKEN`) is available
+and the legacy client sends no `Authorization`, current Core answers the
+credentials alias with `403 machine_credential_required`; the proxy forwards that
+status unchanged.
 
 ## Browser introspection
 

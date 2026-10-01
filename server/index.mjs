@@ -2,8 +2,10 @@
  * 0KAY compatibility proxy: exposes the legacy API surface on its own port and
  * forwards translated requests to the current Core (or another component base).
  *
- *   COMPAT_PORT    listen port            (default 8090)
- *   COMPAT_TARGET  upstream base URL      (default http://127.0.0.1:8080)
+ *   COMPAT_PORT        listen port                  (default 8090)
+ *   COMPAT_TARGET      upstream base URL            (default http://127.0.0.1:8080)
+ *   COMPAT_CORE_TOKEN  Core machine token to forward for the plaintext
+ *                      credentials alias (default CORE_PAIR_TOKEN/CORE_API_TOKEN)
  *
  * External clients that still speak the old paths point at this port; the
  * browser plugin covers the WebUI itself. Legacy request aliases live in
@@ -48,6 +50,17 @@ const server = http.createServer(async (req, res) => {
     // recomputed for the forwarded request (curl sends Expect for large bodies).
     for (const name of ['host', 'content-length', 'expect', 'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer']) {
       delete headers[name]
+    }
+
+    // Current Core restricts the plaintext credentials export to machine
+    // callers. The legacy `GET /api/providers` alias rewrites to that endpoint,
+    // so present a Core machine token when the legacy client did not supply one.
+    // Override or disable by setting COMPAT_CORE_TOKEN / CORE_PAIR_TOKEN /
+    // CORE_API_TOKEN; with no token the upstream answers 403 and that status is
+    // forwarded unchanged.
+    if (resolved.path === '/api/providers/credentials' && !headers.authorization) {
+      const token = process.env.COMPAT_CORE_TOKEN || process.env.CORE_PAIR_TOKEN || process.env.CORE_API_TOKEN
+      if (token) headers.authorization = `Bearer ${token}`
     }
 
     const init = { method: resolved.method, headers }
